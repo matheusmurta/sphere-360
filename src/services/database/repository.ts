@@ -1,6 +1,6 @@
 import { db as defaultDb, type SphereDB } from './db'
 import { toStorageError } from '@/services/storage/errors'
-import type { Album, PhotoMeta } from '@/types'
+import type { Album, PhotoBlobRecord, PhotoMeta } from '@/types'
 
 export function uuid(): string {
   if (typeof crypto !== 'undefined' && 'randomUUID' in crypto) return crypto.randomUUID()
@@ -8,6 +8,28 @@ export function uuid(): string {
     const r = (Math.random() * 16) | 0
     return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16)
   })
+}
+
+/**
+ * No Safari/iOS, gravar `File`/`Blob` no IndexedDB é instável: o registro guarda só uma
+ * referência a um arquivo temporário que o sistema apaga, e a leitura posterior falha
+ * (WebKitBlobResource error). Por isso gravamos os bytes como ArrayBuffer.
+ */
+async function toRecord(id: string, blob: Blob, type?: string): Promise<PhotoBlobRecord> {
+  return { id, data: await blob.arrayBuffer(), type: type || blob.type }
+}
+
+/** Converte o registro em Blob, validando registros antigos (Blob) que podem estar corrompidos no iOS. */
+async function fromRecord(rec: PhotoBlobRecord | undefined): Promise<Blob | undefined> {
+  if (!rec) return undefined
+  if (rec.data) return new Blob([rec.data], { type: rec.type ?? '' })
+  if (!rec.blob) return undefined
+  try {
+    // Materializa os bytes: se o arquivo temporário do iOS sumiu, falha aqui e não no viewer.
+    return new Blob([await rec.blob.arrayBuffer()], { type: rec.blob.type })
+  } catch {
+    return undefined
+  }
 }
 
 /** Repositório da biblioteca: toda operação de persistência passa por aqui. */
@@ -28,17 +50,19 @@ export function createRepository(db: SphereDB = defaultDb) {
     findByHash: (hash: string) => guard(() => db.photos.where('hash').equals(hash).first()),
 
     async addPhoto(meta: PhotoMeta, original: Blob, thumbnail: Blob) {
+      // Lê os bytes ANTES da transação (await fora do Dexie encerraria a transação).
+      const [o, t] = await guard(() => Promise.all([toRecord(meta.id, original, meta.mimeType), toRecord(meta.id, thumbnail)]))
       return guard(() =>
         db.transaction('rw', db.photos, db.originals, db.thumbnails, async () => {
           await db.photos.add(meta)
-          await db.originals.add({ id: meta.id, blob: original })
-          await db.thumbnails.add({ id: meta.id, blob: thumbnail })
+          await db.originals.add(o)
+          await db.thumbnails.add(t)
         }),
       )
     },
 
-    getOriginal: async (id: string) => (await guard(() => db.originals.get(id)))?.blob,
-    getThumbnail: async (id: string) => (await guard(() => db.thumbnails.get(id)))?.blob,
+    getOriginal: async (id: string) => fromRecord(await guard(() => db.originals.get(id))),
+    getThumbnail: async (id: string) => fromRecord(await guard(() => db.thumbnails.get(id))),
 
     updatePhoto: (id: string, changes: Partial<Omit<PhotoMeta, 'id'>>) =>
       guard(() => db.photos.update(id, changes)),

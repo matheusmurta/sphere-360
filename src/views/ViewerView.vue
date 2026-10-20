@@ -58,9 +58,17 @@ async function preloadNext() {
 async function load() {
   const meta = photo.value
   if (!meta) return
-  const blob = preloaded?.id === meta.id ? preloaded.blob : await lib.getOriginal(meta.id).catch(() => undefined)
+  let blob = preloaded?.id === meta.id ? preloaded.blob : await lib.getOriginal(meta.id).catch(() => undefined)
   preloaded = null
-  if (!blob) { pv.error.value = 'O arquivo original não foi encontrado no armazenamento local.'; return }
+  if (!blob) {
+    // Fotos antigas gravadas como Blob podem ter se perdido no iOS: abre pela miniatura.
+    blob = await lib.getThumbnail(meta.id).catch(() => undefined)
+    if (!blob) { pv.error.value = 'O arquivo original não foi encontrado no armazenamento local.'; return }
+    prefs.set('lastPhotoId', meta.id)
+    await pv.show({ ...meta, width: meta.thumbWidth, height: meta.thumbHeight, projection: 'forced' }, blob)
+    toasts.push('O original desta foto foi perdido pelo Safari. Exibindo a miniatura; importe a foto novamente para qualidade total.', 'warning', 7000)
+    return
+  }
   prefs.set('lastPhotoId', meta.id)
   await pv.show(meta, blob)
   if (pv.reduced.value) toasts.push('Imagem maior que o limite gráfico do aparelho: exibindo versão reduzida temporária. O original foi preservado.', 'warning', 6000)

@@ -31,7 +31,10 @@ export interface PhotoMeta {
 
 export interface PhotoBlobRecord {
   id: string
-  blob: Blob
+  /** Registros novos usam ArrayBuffer (Blobs no IndexedDB são instáveis no Safari/iOS). */
+  blob?: Blob
+  data?: ArrayBuffer
+  type?: string
 }
 
 export interface Album {
