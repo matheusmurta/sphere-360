@@ -16,8 +16,18 @@ export function requestOrientationPermission(): Promise<SensorStatus> {
   if (window.isSecureContext === false) return Promise.resolve('insecure')
   if (!('DeviceOrientationEvent' in window)) return Promise.resolve('unsupported')
   if (needsIOSPermission()) {
-    const fn = (DeviceOrientationEvent as unknown as { requestPermission: PermissionFn }).requestPermission
-    return fn().then((r) => (r === 'granted' ? 'granted' : 'denied')).catch(() => 'denied')
+    const DOE = DeviceOrientationEvent as unknown as { requestPermission: PermissionFn }
+    // Chamada síncrona: ainda dentro do gesto do usuário.
+    const pending = DOE.requestPermission.call(DeviceOrientationEvent)
+    return pending.then((r): SensorStatus => {
+      if (r !== 'granted') return 'denied'
+      // O GyroscopePlugin (e o DeviceOrientationControls interno) chamam requestPermission()
+      // de novo, de forma assíncrona e fora do gesto: no iOS isso falha com NotAllowedError
+      // e os listeners nunca são registrados. Como já temos a permissão, devolvemos o
+      // resultado em cache para essas chamadas.
+      DOE.requestPermission = () => Promise.resolve('granted')
+      return 'granted'
+    }).catch((): SensorStatus => 'denied')
   }
   return Promise.resolve('granted')
 }
